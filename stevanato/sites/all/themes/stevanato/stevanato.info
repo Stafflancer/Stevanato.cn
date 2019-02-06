@@ -1,0 +1,24 @@
+name = Stevanato
+description = A flexible, recolorable theme with many regions.
+package = Core
+version = VERSION
+core = 7.x
+
+stylesheets[all][] = css/fonts.css
+stylesheets[all][] = css/foundation-flex.css
+stylesheets[all][] = css/slick.css
+stylesheets[all][] = css/style.css
+stylesheets[all][] = css/custom.css
+
+scripts[] = js/slick.min.js
+scripts[] = js/script.js
+
+regions[header] = Header
+regions[help] = Help
+regions[sidebar_left] = Sidebar left
+regions[content] = Content
+regions[footer_left] = Footer Left
+regions[footer_right] = Footer Right
+regions[footer] = Footer
+
+settings[shortcut_module_link] = 0

@@ -1,0 +1,4 @@
+name = Stevanato Common Module
+description = Stevanato Common Module
+core = 7.x
+package = Custom

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="547" height="236" viewBox="0 0 547 236">
+    <g fill="none" fill-rule="evenodd">
+        <text fill="#0067AD" font-family="OpenSans-Regular, Open Sans" font-size="300" transform="translate(-6 -96)">
+            <tspan x="0" y="321">4</tspan>
+        </text>
+        <text fill="#0067AD" font-family="OpenSans-Regular, Open Sans" font-size="300" transform="translate(-6 -96)">
+            <tspan x="387" y="321">4</tspan>
+        </text>
+        <g transform="translate(228 24)">
+            <rect width="104" height="212" x="-6" y="-12" stroke="#0067AD" stroke-width="24" rx="45"/>
+            <path fill="#0067AD" d="M0 108h91v80H0z"/>
+            <path stroke="#0067AD" stroke-linecap="round" stroke-linejoin="round" stroke-width="7" d="M60.5 42.5V75M60.5 25v5"/>
+        </g>
+    </g>
+</svg>

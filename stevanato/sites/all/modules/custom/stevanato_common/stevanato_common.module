@@ -1,0 +1,258 @@
+<?php
+/**
+ * @file
+ * Code for the stevanato_common module.
+ */
+
+/**
+ * Implements hook_menu_alter().
+ */
+function stevanato_common_menu_alter(&$items) {
+  $items['node']['page callback'] = 'stevanato_common_empty_front_page_callback';
+}
+
+/**
+ * Implements hook_language_switch_links_alter().
+ */
+function stevanato_common_empty_front_page_callback() {
+  drupal_set_title('');
+  return array();
+}
+
+/**
+ * Implements hook_menu().
+ */
+function stevanato_common_menu() {
+
+  $items['page-404'] = array(
+    'type' => MENU_NORMAL_ITEM,
+    'title' => t('Page not found'),
+    'page callback' => 'stevanato_common_special_page',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+  );
+
+  $items['page-403'] = array(
+    'type' => MENU_NORMAL_ITEM,
+    'title' => t('403 Forbidden'),
+    'page callback' => 'stevanato_common_special_page',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+  );
+
+  return $items;
+}
+
+/**
+ * Page callback.
+ */
+function stevanato_common_special_page() {
+  return '';
+}
+
+/**
+* Implementation of hook_form_alter()
+*/
+function stevanato_common_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'bean_form') {
+    // Access FALSE.
+    $form['view_mode']['#access'] = $form['revision']['#access'] = $form['revision']['is_new_revision']['#default_value'] = FALSE;
+  }
+  if ($form_id == 'search_block_form') {
+    $form['search_block_form']['#attributes']['placeholder'] = '输入您要搜索的内容';
+  }
+
+  if ($form_id == 'event_node_form') {
+    $form['#attached']['js'][] = array(
+      'data' => drupal_get_path('module', 'stevanato_common') . '/js/stevanato_common_event_node_form.js',
+      'type' => 'file', 
+    );
+    drupal_add_css('.field-name-field-date-end { display: none }', array('type' => 'inline'));
+  }
+}
+
+/**
+* Implementation of hook_views_query_alter()
+*/
+function stevanato_common_views_query_alter(&$view, &$query) {
+  if ($view->name == 'events' && $view->current_display == 'page_1') {
+    $now = date('Y-m-d\TH');
+
+    // Archive.
+    if (isset($_GET['archive'])) {
+      unset($query->where[1]['conditions'][2]);
+
+      if (empty($_GET['archive'])) {
+        $query->add_where(
+          1, 
+          "DATE_FORMAT(field_data_field_date.field_date_value, '%Y-%m-%d\T%H') < :field_data_field_date_field_date_value", 
+          array(':field_data_field_date_field_date_value' => $now), 
+          'formula'
+        );
+      }
+      else {
+        $query->add_where(
+          1, 
+          "DATE_FORMAT(field_data_field_date.field_date_value, '%Y-%m-%d\T%H') < :field_data_field_date_field_date_value", 
+          array(':field_data_field_date_field_date_value' => $now), 
+          'formula'
+        );
+
+        $archive_year = $_GET['archive'];
+        $query->add_where(
+          1, 
+          "DATE_FORMAT(field_data_field_date.field_date_value, '%Y') = :field_data_field_date_field_date_value_2", 
+          array(':field_data_field_date_field_date_value_2' => $archive_year), 
+          'formula'
+        );
+      }
+    }
+
+    // Events.
+    if (!empty($_GET['month'])) {
+      $month = $_GET['month'];
+      $query->add_where(
+        1, 
+        "DATE_FORMAT(field_data_field_date.field_date_value, '%m') = :field_data_field_date_field_date_value_2", 
+        array(':field_data_field_date_field_date_value_2' => $month), 
+        'formula'
+      );
+    }
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function stevanato_common_theme() {
+  $theme = array();
+
+  $base = array(
+    'path' => drupal_get_path('module', 'stevanato_common') . '/theme',
+  );
+
+  $theme['stevanato_common_events_filters'] = array(
+    'template' => 'stevanato-common-events-filters',
+  ) + $base;
+  
+
+  return $theme;
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function stevanato_common_block_info() {
+  $blocks = array();
+
+  $blocks['events_filters'] = array(
+    'info' => t('Events filters'),
+  );
+  
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function stevanato_common_block_view($delta='') {
+  $block = array();
+  
+  switch($delta) {
+    case 'events_filters' :
+      $nodes = db_select('node', 'n')
+        ->fields('n', array('nid', 'title'))
+        ->condition('n.type', 'events')
+        ->condition('n.status', 1)
+        ->execute()
+        ->fetchAll();
+
+      $query = db_select('node', 'n');
+      $query->condition('n.type', 'event');
+      $query->innerJoin('field_data_field_date', 'fd', 'n.nid = fd.entity_id');
+      $query->condition('fd.bundle', 'event');
+      $query->where('YEAR(fd.field_date_value) <= :now', array(':now' => date('Y')));
+      $query->fields('fd', array('field_date_value'));
+      $dates = $query->execute()->fetchAll();
+
+      $years = array();
+
+      foreach ($dates as $key => $value) {
+        $year = date('Y', strtotime($value->field_date_value));
+        $years[$year] = $year;
+      }
+
+      sort($years);
+
+      $months = array(
+        array(
+          'query' => '',
+          'title' => '预告',
+        ), 
+        array(
+          'query' => '?month=12',
+          'title' => '十二月',
+        ), 
+        array(
+          'query' => '?month=11',
+          'title' => '十一月',
+        ), 
+        array(
+          'query' => '?month=10',
+          'title' => '十月',
+        ), 
+        array(
+          'query' => '?month=09',
+          'title' => '九月',
+        ), 
+        array(
+          'query' => '?month=08',
+          'title' => '八月',
+        ), 
+        array(
+          'query' => '?month=07',
+          'title' => '七月',
+        ), 
+        array(
+          'query' => '?month=06',
+          'title' => '六月',
+        ), 
+        array(
+          'query' => '?month=05',
+          'title' => '五月',
+        ), 
+        array(
+          'query' => '?month=04',
+          'title' => '四月',
+        ), 
+        array(
+          'query' => '?month=03',
+          'title' => '三月',
+        ), 
+        array(
+          'query' => '?month=02',
+          'title' => '二月',
+        ), 
+        array(
+          'query' => '?month=01',
+          'title' => '一月',
+        ), 
+      );
+
+      $block['content'] = theme('stevanato_common_events_filters', array(
+        'years' => $years,
+        'months' => $months,
+        'path' => $_SERVER['REQUEST_URI']
+      ));
+      break;
+  }
+  
+  return $block;
+}
+
+/**
+ * Implements hook_page_alter().
+ */
+function stevanato_common_page_alter(&$page) {
+  drupal_add_js(drupal_get_path('module', 'stevanato_common') . '/js/stevanato_common_load_images.js', array('type' => 'file', 'scope' => 'footer'));
+}

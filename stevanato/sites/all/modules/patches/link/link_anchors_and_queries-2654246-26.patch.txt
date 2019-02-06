@@ -1,0 +1,47 @@
+diff --git a/link.module b/link.module
+index c7f5281..fafd908 100644
+--- a/link.module
++++ b/link.module
+@@ -8,6 +8,8 @@
+ define('LINK_EXTERNAL', 'external');
+ define('LINK_INTERNAL', 'internal');
+ define('LINK_FRONT', 'front');
++define('LINK_FRAGMENT', 'fragment');
++define('LINK_QUERY', 'query');
+ define('LINK_EMAIL', 'email');
+ define('LINK_TEL', 'tel');
+ define('LINK_NEWS', 'news');
+@@ -578,6 +580,10 @@ function _link_sanitize(&$item, $delta, &$field, $instance, &$entity) {
+   if ($type == FALSE && $instance['settings']['validate_url'] === 0) {
+     $type = LINK_EXTERNAL;
+   }
++  elseif ($type == LINK_FRAGMENT || $type == LINK_QUERY) {
++    // If type is a fragment or query, then use the current URL.
++    $item['url'] = drupal_is_front_page() ? '/' . $item['url'] : $_GET['q'] . $item['url'];
++  }
+   $url = link_cleanup_url($item['url']);
+   $url_parts = _link_parse_url($url);
+ 
+@@ -595,6 +601,9 @@ function _link_sanitize(&$item, $delta, &$field, $instance, &$entity) {
+   if ($type == LINK_EMAIL) {
+     $display_url = str_replace('mailto:', '', $url);
+   }
++  elseif ($type === LINK_EXTERNAL) {
++   $display_url = $item['url'];
++  }
+   elseif ($type == LINK_TEL) {
+     $display_url = str_replace('tel:', '', $url);
+   }
+@@ -1606,6 +1615,12 @@ function link_url_type($text) {
+   if (in_array('mailto', $allowed_protocols) && preg_match($email_pattern, $text)) {
+     return LINK_EMAIL;
+   }
++  if (strpos($text, '#') === 0) {
++    return LINK_FRAGMENT;
++  }
++  if (strpos($text, '?') === 0) {
++    return LINK_QUERY;
++  }
+   if (in_array('tel', $allowed_protocols) && strpos($text, 'tel:') === 0) {
+     if (preg_match($tel_pattern, $text)) {
+       // Based on our tel pattern this is a 'valid' phone number so return tel

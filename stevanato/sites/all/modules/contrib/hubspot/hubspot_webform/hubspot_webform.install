@@ -1,0 +1,42 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function hubspot_webform_schema() {
+  if (!db_table_exists('hubspot')) {
+    $schema['hubspot'] = array(
+      'description' => 'Base table for hubspot. Stores field mappings from webform fields to hubspot form fields.',
+      'fields' => array(
+        'nid' => array(
+          'description' => 'The node id of the webform for this row.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+          'default' => 0,
+        ),
+        'hubspot_guid' => array(
+          'description' => 'The hubspot form guid for this row.',
+          'type' => 'text',
+        ),
+        'webform_field' => array(
+          'description' => 'The webform field key for this row.',
+          'type' => 'text',
+        ),
+        'hubspot_field' => array(
+          'description' => 'The hubspot field key for this row.',
+          'type' => 'text',
+        ),
+      ),
+      'indexes' => array(
+        'nid' => array(
+          'nid',
+          array('hubspot_guid', 128),
+          array('webform_field', 128),
+          array('hubspot_field', 128),
+        ),
+      ),
+    );
+    return $schema;
+  }
+}

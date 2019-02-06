@@ -1,0 +1,8 @@
+<?php
+
+/**
+ * @file
+ * Code for the Stevatato Views feature.
+ */
+
+include_once 'stevatato_views.features.inc';

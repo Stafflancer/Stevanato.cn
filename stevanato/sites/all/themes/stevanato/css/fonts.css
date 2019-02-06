@@ -1,0 +1,35 @@
+@font-face {
+  font-family: "NotoSansCJKSC";
+  src: url("../fonts/NotoSansCJKSC/NotoSansCJKSC.ttf");
+  font-style: normal;
+  font-weight: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PingFangSCRegular";
+  src: url("../fonts/PingFangSC/PingFangSCRegular.ttf");
+  font-style: normal;
+  font-weight: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "NotoSansCJKSCMedium";
+  src: url("../fonts/NotoSansCJKSC/NotoSansCJKSCMedium.ttf");
+  font-style: normal;
+  font-weight: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "OpenSans";
+  src: url("../fonts/OpenSans/OpenSans.ttf");
+  font-style: normal;
+  font-weight: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "OpenSansSemibold";
+  src: url("../fonts/OpenSans/OpenSansSemibold.ttf");
+  font-style: normal;
+  font-weight: normal;
+  font-display: swap;
+}

@@ -1,0 +1,10 @@
+name = Stevatato Enable Modules
+description = For enable modules
+core = 7.x
+package = Stevatato
+version = 7.x-1.0
+dependencies[] = autodialog
+dependencies[] = stevatato_content_types
+dependencies[] = stevatato_views
+features[features_api][] = api:2
+project path = sites/all/modules/features

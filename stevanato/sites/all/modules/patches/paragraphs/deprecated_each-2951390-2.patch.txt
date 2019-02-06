@@ -1,0 +1,14 @@
+diff --git a/ParagraphsItemEntity.inc b/ParagraphsItemEntity.inc
+index ef6fd51..e32cf80 100644
+--- a/ParagraphsItemEntity.inc
++++ b/ParagraphsItemEntity.inc
+@@ -296,7 +296,8 @@ class ParagraphsItemEntity extends Entity {
+           $query->age(FIELD_LOAD_REVISION);
+         }
+         $result = $query->execute();
+-        list($this->hostEntityType, $data) = each($result);
++        $this->hostEntityType = key($result);
++        $data = current($result);
+ 
+         if ($data) {
+           $data_values = array_shift($data);

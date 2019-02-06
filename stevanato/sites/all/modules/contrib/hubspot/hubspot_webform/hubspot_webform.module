@@ -1,0 +1,238 @@
+<?php
+/**
+ * @file
+ * Sends Webform results to HubSpot's Forms API.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function hubspot_webform_menu() {
+  // Node HubSpot forms.
+  $items['node/%webform_menu/webform/hubspot'] = array(
+    'title' => 'HubSpot',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('hubspot_webform_form_settings', 1),
+    'access callback' => 'node_access',
+    'access arguments' => array('update', 1),
+    'weight' => 10,
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'hubspot_webform.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Form handler for pardot_webform_form_alter().
+ *
+ * Intercepts the WebForm submission and send it off to HubSpot.
+ */
+function hubspot_webform_submit($form, &$form_state) {
+  $node = $form['#node'];
+
+  if (empty($node)) {
+    return;
+  }
+
+  $hubspot_portalid = variable_get('hubspot_portalid', '');
+  $hubspot_form_guid = db_query_range("SELECT hubspot_guid FROM {hubspot} h WHERE h.nid = :nid", 0, 1, array(
+    ':nid' => $node->nid,
+  ))->fetchField();
+
+  if (empty($hubspot_portalid) || empty($hubspot_form_guid)) {
+    return;
+  }
+
+  $fields = array();
+
+  $sql = "SELECT webform_field, hubspot_field FROM {hubspot} h WHERE h.nid = :nid AND h.hubspot_guid = :guid AND hubspot_field != :empty";
+
+  $result = db_query($sql, array(
+    ':nid' => $node->nid,
+    ':guid' => $hubspot_form_guid,
+    ':empty' => '--donotmap--',
+  ));
+
+  $field_mappings = array();
+
+  while ($row = $result->fetchObject()) {
+    $field_mappings[$row->webform_field] = array('key' => $row->hubspot_field);
+  }
+
+  $post_fields = automate_webform_values($form, $form_state);
+  $fields = automate_map_webform_values($post_fields, $field_mappings);
+
+  // These fields must be submitted with each request.
+  $hs_context = array(
+    'hutk' => isset($_COOKIE['hubspotutk']) ? $_COOKIE['hubspotutk'] : '',
+    'ipAddress' => ip_address(),
+    'pageName' => $node->title,
+    'pageUrl' => url('node/' . $node->nid, array('absolute' => TRUE)),
+  );
+
+  $fields['hs_context'] = drupal_json_encode($hs_context);
+
+  $result = hubspot_webform_insert_lead($hubspot_portalid, $hubspot_form_guid, $fields);
+
+  if ($result['HTTPCode'] == '204') {
+    watchdog('hubspot', 'Webform "%form" results succesfully submitted to HubSpot. Post: @post - Response: @msg', array(
+      '@post' => strip_tags($result['POST']),
+      '@msg' => strip_tags($result['Data']),
+      '%form' => $node->title,
+    ), WATCHDOG_INFO);
+  }
+  elseif (!empty($result['Error'])) {
+    watchdog('hubspot', 'HTTP error when submitting HubSpot data from Webform "%form": @error', array(
+      '@error' => $result['Error'],
+      '%form' => $node->title,
+    ), WATCHDOG_ERROR);
+
+    if (variable_get('hubspot_debug_on', 0)) {
+      drupal_mail('hubspot', 'http_error', variable_get('hubspot_debug_email', variable_get('site_mail', '')), language_default(), array(
+        'errormsg' => $result['Error'],
+        'hubspot_url' => $hubspot_url,
+        'node_title' => $node->title,
+      ), variable_get('site_mail', ''));
+    }
+  }
+  else {
+    watchdog('hubspot', 'HubSpot error when submitting Webform "%form": @error', array(
+      '@error' => $result['Data'],
+      '%form' => $node->title,
+    ), WATCHDOG_ERROR);
+
+    if (variable_get('hubspot_debug_on', 0)) {
+      drupal_mail('hubspot', 'hub_error', variable_get('hubspot_debug_email', variable_get('site_mail', '')), language_default(), array(
+        'errormsg' => $result['Data'],
+        'hubspot_url' => $hubspot_url,
+        'node_title' => $node->title,
+      ), variable_get('site_mail', ''));
+    }
+  }
+}
+
+/**
+ * Executes the HubSpot API POST to insert a lead.
+ *
+ * @param string $portal_id
+ *   HubSpot Portal ID to submit to.
+ * @param string $form_guid
+ *   HubSpot-provided Form API GUID to submit to.
+ * @param array $fields
+ *   Form fields, such as name and contact info.
+ *
+ * @return array
+ *   An associative array containing:
+ *   - Data: The response returned from drupal_http_request().
+ *   - Error: The HTTP error message from drupal_http_request().
+ *   - HTTPCode: The HTTP response code of the request.
+ */
+function hubspot_webform_insert_lead($portal_id, $form_guid, $fields) {
+  $str_post = drupal_http_build_query($fields);
+
+  // Send POST data.
+  $result = drupal_http_request('https://forms.hubspot.com/uploads/form/v2/' . $portal_id . '/' . $form_guid, array(
+    'headers' => array(
+      'Content-Type' => 'application/x-www-form-urlencoded',
+    ),
+    'method' => 'POST',
+    'data' => $str_post,
+  ));
+
+  return array(
+    'Data' => isset($result->data) ? $result->data : '',
+    'Error' => isset($result->error) ? $result->error : '',
+    'HTTPCode' => $result->code,
+    'POST' => $str_post,
+  );
+}
+
+/**
+ * Implements hook_mail().
+ */
+function hubspot_webform_mail($key, &$message, $params) {
+  $message['subject'] = t('HubSpot leads insertion error');
+
+  switch ($key) {
+    case 'http_error':
+      $message['body'][] = t('When attempting to submit the form "@form" to HubSpot, a HTTP error occurred.', array(
+        '@form' => $params['node_title'],
+      ));
+      break;
+
+    case 'hub_error':
+      $message['body'][] = t('Upon submitting the Webform "@form" to HubSpot, an error was returned.', array(
+        '@form' => $params['node_title'],
+      ));
+      break;
+  }
+
+  $message['body'][] = t('Error message: @message', array('@message' => $params['errormsg']));
+  $message['body'][] = t('HubSpot POST URL: @url', array('@url' => $params['hubspot_url']));
+  $message['body'][] = t('To adjust the debugging settings, visit @url', array(
+    '@url' => url('admin/config/content/hubspot', array('absolute' => TRUE))
+  ));
+}
+
+/**
+ * Implements hook_help().
+ */
+function hubspot_webform_help($path, $arg) {
+  $output = '';
+  switch ($path) {
+    case 'admin/help#hubspot':
+      $output .= '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('The HubSpot module provides leads integration with the HubSpot API, allowing forms created
+        with the Webform module to submit their data to HubSpot for leads tracking. It also allows you to easily embed
+        the HubSpot JavaScript tracking code in your site to track the visits of each lead. Further information is
+        available in the Drupal <a href="http://drupal.org/node/1195370">handbook pages for this module.</a>') . '</p>';
+      $output .= '<h3>' . t('Creating a HubSpot Webform') . '</h3>';
+      $output .= '<p>' . t("To have a Webform's data sent to HubSpot for leads tracking, complete the following steps:")
+        . '</p>';
+      $output .= '<ol>';
+      $output .= '<li>' . t('Connect to your HubSpot account from the HubSpot settings page (links below).') . '</li>';
+      $output .= '<li>' . t('From the Webform tab of any webform you will now see the HubSpot "subtab" link below. Click
+       on that link.') . '</li>';
+      $output .= '<li>' . t('On that page you will see a dropdown listing all of your HubSpot forms (set up from
+        HubSpot.com). Select the form you want to map to this Webform.') . '</li>';
+      $output .= '<li>' . t('Finally, just go through each Webform fields and map them to the HubSpot form fields
+        available in each dropdown. Click save and you\'re done!') . '</li>';
+      $output .= '</ol>';
+      $output .= '<p>' . t('The Webform will now automatically send any submissions directly to HubSpot form you
+        configured.') . '</p>';
+      $output .= '<h3>' . t('HubSpot Javascript tracking code') . '</h3>';
+      $output .= '<p>' . t('HubSpot supports using a JavaScript tracking system to analyze potential leads on your site.
+        You can get the JavaScript code from your HubSpot settings, under External Site Traffic Logging, and paste it
+        into the HubSpot integration settings page in Drupal to have it automatically included on every page.') . '</p>';
+      break;
+    case 'node/%/webform/hubspot':
+      $output .= '<p>' . t("To post this form's results to HubSpot you will need to select the HubSpot form and map the
+        webform fields to the available HubSpot fields.") . '</p>';
+      break;
+  }
+  return $output;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function hubspot_webform_form_alter(&$form, $form_state, $form_id) {
+  if (strstr($form_id, 'webform_client_form')) {
+    $nid = $form['details']['nid']['#value'];
+    if (empty($nid)) {
+      return;
+    }
+
+    // Check to see if this is configured for Hubspot
+    if (!db_query('SELECT count(*) FROM {hubspot} WHERE nid = :nid', array(':nid' => $nid))) {
+      return;
+    }
+
+    $form['#submit'][] = 'hubspot_webform_submit';
+  }
+  elseif (strstr($form_id, 'hubspot_admin_settings')) {
+    module_load_include('inc', 'hubspot_webform', 'hubspot_webform.admin');
+    _hubspot_webform_admin_settings($form);
+  }
+}

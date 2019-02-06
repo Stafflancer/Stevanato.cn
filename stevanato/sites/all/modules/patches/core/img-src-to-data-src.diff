@@ -1,0 +1,16 @@
+ includes/theme.inc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/includes/theme.inc b/includes/theme.inc
+index a926b764e..d4fcdec0d 100644
+--- a/includes/theme.inc
++++ b/includes/theme.inc
+@@ -1876,7 +1876,7 @@ function theme_links($variables) {
+  */
+ function theme_image($variables) {
+   $attributes = $variables['attributes'];
+-  $attributes['src'] = file_create_url($variables['path']);
++  $attributes['data-src'] = file_create_url($variables['path']);
+ 
+   foreach (array('width', 'height', 'alt', 'title') as $key) {
+ 

@@ -1,0 +1,250 @@
+diff --git a/hubspot.admin.inc b/hubspot.admin.inc
+index 87af1aa..fe4ee50 100644
+--- a/hubspot.admin.inc
++++ b/hubspot.admin.inc
+@@ -36,7 +36,25 @@ function hubspot_admin_settings() {
+       "dashboard-plus" is your Portal ID.'),
+   );
+ 
+-  if (variable_get('hubspot_portalid', '')) {
++  $form['settings']['hubspot_client_id'] = array(
++    '#type' => 'textfield',
++    '#title' => t('HubSpot Client ID'),
++    '#default_value' => variable_get('hubspot_client_id', ''),
++  );
++
++  $form['settings']['hubspot_client_secret'] = array(
++    '#type' => 'textfield',
++    '#title' => t('HubSpot Client Secret'),
++    '#default_value' => variable_get('hubspot_client_secret', ''),
++  );
++
++  $form['settings']['hubspot_scope'] = array(
++    '#type' => 'textfield',
++    '#title' => t('HubSpot Scope'),
++    '#default_value' => variable_get('hubspot_scope', 'contacts forms'),
++  );
++
++  if (variable_get('hubspot_client_id', '') && variable_get('hubspot_client_secret', '')) {
+     $form['settings']['hubspot_authentication'] = array(
+       '#value' => t('Connect Hubspot Account'),
+       '#type' => 'submit',
+@@ -94,6 +112,9 @@ function hubspot_admin_settings() {
+  */
+ function hubspot_admin_settings_submit($form, &$form_state) {
+   variable_set('hubspot_portalid', $form_state['values']['hubspot_portalid']);
++  variable_set('hubspot_client_id', $form_state['values']['hubspot_client_id']);
++  variable_set('hubspot_client_secret', $form_state['values']['hubspot_client_secret']);
++  variable_set('hubspot_scope', $form_state['values']['hubspot_scope']);
+   variable_set('hubspot_debug_email', $form_state['values']['hubspot_debug_email']);
+   variable_set('hubspot_debug_on', $form_state['values']['hubspot_debug_on']);
+   variable_set('hubspot_log_code', $form_state['values']['hubspot_log_code']);
+@@ -121,14 +142,16 @@ function hubspot_admin_settings_validate($form, &$form_state) {
+  * Form submission handler for hubspot_admin_settings().
+  */
+ function hubspot_oauth_submit($form, &$form_state) {
++  $client_id = variable_get('hubspot_client_id', '');
++  $scope = variable_get('hubspot_scope', 'contacts forms');
++
+   $data = array(
+-    'client_id' => HUBSPOT_CLIENT_ID,
+-    'portalId' => $form_state['values']['hubspot_portalid'],
++    'client_id' => $client_id,
+     'redirect_uri' => url('hubspot/oauth', array('query' => drupal_get_destination(), 'absolute' => TRUE)),
+-    'scope' => HUBSPOT_SCOPE,
++    'scope' => $scope,
+   );
+ 
+-  $form_state['redirect'][] = url('https://app.hubspot.com/auth/authenticate', array('query' => $data));
++  $form_state['redirect'][] = url('https://app.hubspot.com/oauth/authorize', array('query' => $data));
+ }
+ 
+ /**
+@@ -137,17 +160,56 @@ function hubspot_oauth_submit($form, &$form_state) {
+  * Saves OAuth tokens from HubSpot and redirects user.
+  */
+ function hubspot_oauth_connect() {
+-  if (!empty($_GET['access_token']) && !empty($_GET['refresh_token']) && !empty($_GET['expires_in'])) {
+-    drupal_set_message(t('Successfully authenticated with Hubspot.'), 'status', FALSE);
++  if (!empty($_GET['code'])) {
++
++    $client_id = variable_get('hubspot_client_id', '');
++    $client_secret = variable_get('hubspot_client_secret', '');
++    $redirect_uri = url('hubspot/oauth', array('query' => drupal_get_destination(), 'absolute' => TRUE));
++    $code = $_GET['code'];
++
++    // Get OAuth 2.0 Access Token and Refresh Tokens
++    $url = 'https://api.hubapi.com/oauth/v1/token';
++
++    $data = array(
++      'grant_type' => 'authorization_code',
++      'client_id' => $client_id,
++      'client_secret' => $client_secret,
++      'redirect_uri' => $redirect_uri,
++      'code' => $code,
++    );
++
++    $options = array(
++      'headers' => array(
++        'Content-Type' => 'application/x-www-form-urlencoded',
++      ),
++      'method' => 'POST',
++      'data' => drupal_http_build_query($data),
++    );
++
++    $response = drupal_http_request($url, $options);
++
++    if (isset($response->code) && $response->code == '200' && !empty($response->data)) {
++      $response_data = drupal_json_decode($response->data);
+ 
+-    variable_set('hubspot_access_token', $_GET['access_token']);
+-    variable_set('hubspot_refresh_token', $_GET['refresh_token']);
+-    variable_set('hubspot_expires_in', $_GET['expires_in']);
++      variable_set('hubspot_access_token', $response_data['access_token']);
++      variable_set('hubspot_refresh_token', $response_data['refresh_token']);
++      variable_set('hubspot_expires_in', $response_data['expires_in']);
++
++      drupal_set_message(t('Successfully authenticated with Hubspot.'));
++    }
++    else {
++      $response_data = !empty($response->data) ? $response->data : '';
++
++      drupal_set_message(t('Failed to get access token and refresh token. Error = %error', array('%error' => $response_data)), 'error');
++      watchdog('hubspot', $response_data, array(), 'error');
++    }
+   }
+ 
+-  if (!empty($_GET['error']) && $_GET['error'] == "access_denied") {
+-    drupal_set_message(t('You denied the request for authentication with Hubspot. Please click the button again and
+-      choose the AUTHORIZE option.'), 'error', FALSE);
++  if (!empty($_GET['error'])) {
++    $error_code = $_GET['error'];
++    $error_description = !empty($_GET['error_description']) ? $_GET['error_description'] : '';
++
++    drupal_set_message(t('Authorization failed. Error = @error_code, Description = @error_description', array('@error_code' => $error_code, '@error_description' => $error_description)), 'error', FALSE);
+   }
+ 
+   drupal_goto();
+diff --git a/hubspot.install b/hubspot.install
+index e2732e1..73e35ad 100644
+--- a/hubspot.install
++++ b/hubspot.install
+@@ -25,6 +25,9 @@ function hubspot_uninstall() {
+   variable_del('hubspot_refresh_token');
+   variable_del('hubspot_expires_in');
+   variable_del('hubspot_portalid');
++  variable_del('hubspot_client_id');
++  variable_del('hubspot_client_secret');
++  variable_del('hubspot_scope');
+ }
+ 
+ /**
+diff --git a/hubspot.module b/hubspot.module
+index da2c12d..b4bc2d3 100644
+--- a/hubspot.module
++++ b/hubspot.module
+@@ -4,9 +4,6 @@
+  * Sends Webform results to HubSpot's Forms API.
+  */
+ 
+-define('HUBSPOT_CLIENT_ID', '734f89bf-1b88-11e1-829a-3b413536dd4c');
+-define('HUBSPOT_SCOPE', 'leads-rw contacts-rw offline');
+-
+ /**
+  * Implements hook_menu().
+  */
+@@ -37,10 +34,19 @@ function hubspot_menu() {
+  * Refreshes HubSpot OAuth Access Token when expired.
+  */
+ function hubspot_oauth_refresh() {
++  $client_id = variable_get('hubspot_client_id', '');
++  $client_secret = variable_get('hubspot_client_secret', '');
++  $redirect_uri = url('hubspot/oauth', array('query' => drupal_get_destination(), 'absolute' => TRUE));
++  $refresh_token = variable_get('hubspot_refresh_token');
++
++  $url = 'https://api.hubapi.com/oauth/v1/token';
++
+   $data = array(
+-    'refresh_token' => variable_get('hubspot_refresh_token'),
+-    'client_id' => HUBSPOT_CLIENT_ID,
+     'grant_type' => 'refresh_token',
++    'client_id' => $client_id,
++    'client_secret' => $client_secret,
++    'redirect_uri' => $redirect_uri,
++    'refresh_token' => $refresh_token,
+   );
+ 
+   $data = drupal_http_build_query($data);
+@@ -53,29 +59,29 @@ function hubspot_oauth_refresh() {
+     'data' => $data,
+   );
+ 
+-  $return = drupal_http_request('https://api.hubapi.com/auth/v1/refresh', $options);
++  $response = drupal_http_request($url, $options);
+ 
+-  if ($return->code == '200') {
+-    $return_data = json_decode($return->data, TRUE);
++  if ($response->code == '200') {
++    $response_data = drupal_json_decode($response->data);
+ 
+-    $hubspot_access_token = $return_data['access_token'];
+-    variable_set('hubspot_access_token', $hubspot_access_token);
++    $access_token = $response_data['access_token'];
++    variable_set('hubspot_access_token', $access_token);
+ 
+-    $hubspot_refresh_token = $return_data['refresh_token'];
+-    variable_set('hubspot_refresh_token', $hubspot_refresh_token);
++    $refresh_token = $response_data['refresh_token'];
++    variable_set('hubspot_refresh_token', $refresh_token);
+ 
+-    $hubspot_expires_in = $return_data['expires_in'];
+-    variable_set('hubspot_expires_in', $hubspot_expires_in);
++    $expires_in = $response_data['expires_in'];
++    variable_set('hubspot_expires_in', $expires_in);
+ 
+     return TRUE;
+   }
+   else {
+-    drupal_set_message(t('Refresh token failed with Error Code "%code: %status_message". Reconnect to your Hubspot
++    drupal_set_message(t('Failed to refresh access token. Error Code "%code: %status_message". Reconnect to your Hubspot
+       account.'), 'error', FALSE);
+-    watchdog('hubspot', 'Refresh token failed with Error Code "%code: %status_message". Visit the Hubspot module
++    watchdog('hubspot', 'Failed to refresh access token. Error Code "%code: %status_message". Visit the Hubspot module
+       settings page and reconnect to your Hubspot account.', array(
+-      '%code' => $return->code,
+-      '%status_message' => $return->status_message,
++      '%code' => $response->code,
++      '%status_message' => $response->status_message,
+     ), WATCHDOG_INFO);
+ 
+     return FALSE;
+diff --git a/hubspot_webform/hubspot_webform.admin.inc b/hubspot_webform/hubspot_webform.admin.inc
+index 8cc58c3..3481314 100644
+--- a/hubspot_webform/hubspot_webform.admin.inc
++++ b/hubspot_webform/hubspot_webform.admin.inc
+@@ -255,13 +255,23 @@ function _hubspot_webform_get_forms() {
+     return array('error' => t('This site is not connected to a HubSpot Account.'));
+   }
+ 
+-  $request = drupal_http_request("https://api.hubapi.com/contacts/v1/forms?access_token={$access_token}");
++  // @todo: Use '/forms/v2/forms' instead of '/contacts/v1/forms'.
++  $url = 'https://api.hubapi.com/contacts/v1/forms';
++  $options = array(
++      'headers' => array(
++          'Authorization' => 'Bearer ' . $access_token,
++          'Content-Type' => 'application/json',
++        ),
++    );
++
++  $request = drupal_http_request($url, $options);
+ 
+   if ($request->code == 401) {
+     $refresh = hubspot_oauth_refresh();
+     if ($refresh) {
+       $access_token = variable_get('hubspot_access_token', '');
+-      $request = drupal_http_request("https://api.hubapi.com/contacts/v1/forms?access_token={$access_token}");
++      $options['headers']['Authorization'] = 'Bearer ' . $access_token;
++      $request = drupal_http_request($url, $options);
+     }
+   }
+ 

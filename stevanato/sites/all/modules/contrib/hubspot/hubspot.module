@@ -1,0 +1,213 @@
+<?php
+/**
+ * @file
+ * Sends Webform results to HubSpot's Forms API.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function hubspot_menu() {
+  $items['admin/config/services/hubspot'] = array(
+    'title' => 'HubSpot integration settings',
+    'description' => 'Set up HubSpot integration and leads insertion.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('hubspot_admin_settings'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'hubspot.admin.inc',
+  );
+
+  $items['hubspot/oauth'] = array(
+    'title' => 'HubSpot OAuth redirect',
+    'description' => 'Collects OAuth tokens.',
+    'page callback' => 'hubspot_oauth_connect',
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_CALLBACK,
+    'file' => 'hubspot.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Refreshes HubSpot OAuth Access Token when expired.
+ */
+function hubspot_oauth_refresh() {
+  $client_id = variable_get('hubspot_client_id', '');
+  $client_secret = variable_get('hubspot_client_secret', '');
+  $redirect_uri = url('hubspot/oauth', array('query' => drupal_get_destination(), 'absolute' => TRUE));
+  $refresh_token = variable_get('hubspot_refresh_token');
+
+  $url = 'https://api.hubapi.com/oauth/v1/token';
+
+  $data = array(
+    'grant_type' => 'refresh_token',
+    'client_id' => $client_id,
+    'client_secret' => $client_secret,
+    'redirect_uri' => $redirect_uri,
+    'refresh_token' => $refresh_token,
+  );
+
+  $data = drupal_http_build_query($data);
+
+  $options = array(
+    'headers' => array(
+      'Content-Type' => 'application/x-www-form-urlencoded; charset=utf-8',
+    ),
+    'method' => 'POST',
+    'data' => $data,
+  );
+
+  $response = drupal_http_request($url, $options);
+
+  if ($response->code == '200') {
+    $response_data = drupal_json_decode($response->data);
+
+    $access_token = $response_data['access_token'];
+    variable_set('hubspot_access_token', $access_token);
+
+    $refresh_token = $response_data['refresh_token'];
+    variable_set('hubspot_refresh_token', $refresh_token);
+
+    $expires_in = $response_data['expires_in'];
+    variable_set('hubspot_expires_in', $expires_in);
+
+    return TRUE;
+  }
+  else {
+    drupal_set_message(t('Failed to refresh access token. Error Code "%code: %status_message". Reconnect to your Hubspot
+      account.'), 'error', FALSE);
+    watchdog('hubspot', 'Failed to refresh access token. Error Code "%code: %status_message". Visit the Hubspot module
+      settings page and reconnect to your Hubspot account.', array(
+      '%code' => $response->code,
+      '%status_message' => $response->status_message,
+    ), WATCHDOG_INFO);
+
+    return FALSE;
+  }
+}
+
+/**
+ * Implements hook_page_build().
+ *
+ * Injects the HubSpot JavaScript tracking code into the page footer, just
+ * before </body>.
+ */
+function hubspot_page_build(&$page) {
+  $page['page_bottom']['hubspot_code'] = array(
+    '#type' => 'markup',
+    '#markup' => variable_get('hubspot_log_code', ''),
+  );
+}
+
+/**
+ * Implements hook_permission().
+ */
+function hubspot_permission() {
+  return array('see recent hubspot leads' => array(
+    'title' => t('See recent HubSpot leads'),
+    'description' => t("View the recent leads block when it's enabled."),
+    'restrict access' => TRUE),
+  );
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function hubspot_block_info() {
+  $blocks = array();
+
+  $blocks['hubspot_recent'] = array(
+    'info' => t('HubSpot Recent Leads'),
+    'properties' => array('administrative' => TRUE),
+  );
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function hubspot_block_view($delta = '') {
+  $block = array();
+
+  switch ($delta) {
+    case 'hubspot_recent':
+      if (!user_access('see recent hubspot leads')) {
+        return;
+      }
+      $block['subject'] = t('HubSpot Recent Leads');
+
+      $leads = hubspot_get_recent();
+
+      // This part of the HubSpot API returns HTTP error codes on failure, with no message
+      if (!empty($leads['Error']) || $leads['HTTPCode'] != 200) {
+        $block['content'] = t('An error occurred when fetching the HubSpot leads data: @error', array(
+          '@error' => !empty($leads['Error']) ? $leads['Error'] : $leads['HTTPCode'],
+        ));
+
+        return $block;
+      }
+      elseif (empty($leads['Data'])) {
+        $block['content'] = t('No leads to show.');
+        return $block;
+      }
+
+      $block['content'] = array(
+        '#theme' => 'item_list',
+        '#items' => array(),
+        '#type' => 'ul',
+      );
+
+      foreach ($leads['Data']->contacts as $lead) {
+        foreach ($leads['Data']->contacts as $lead) {
+          // Note that $lead->insertedAt is in ms, not seconds, since the epoch.
+          $firstname = isset($lead->properties->firstname->value) ? $lead->properties->firstname->value : '';
+          $lastname = isset($lead->properties->lastname->value) ? $lead->properties->lastname->value : t('unknown');
+          $block['content']['#items'][] = l($firstname . ' ' .
+            $lastname, $lead->{'profile-url'}) . ' ' . t('(@time ago)', array(
+              '@time' => format_interval(time() - floor($lead->addedAt / 1000))
+            ));
+        }
+      }
+
+      break;
+  }
+
+  return $block;
+}
+
+/**
+ * Gets the most recent HubSpot leads.
+ *
+ * @param int $n
+ *   The number of leads to fetch.
+ *
+ * @see http://docs.hubapi.com/wiki/Searching_Leads
+ *
+ * @return array
+ */
+function hubspot_get_recent($n = 5) {
+  $access_token = variable_get('hubspot_access_token', '');
+  $n = intval($n);
+
+  if (empty($access_token)) {
+    return array('Error' => t('This site is not connected to a HubSpot Account.'));
+  }
+
+  $result = drupal_http_request("https://api.hubapi.com/contacts/v1/lists/recently_updated/contacts/recent?access_token={$access_token}&count={$n}");
+  if ($result->code == 401) {
+    $refresh = hubspot_oauth_refresh();
+    if ($refresh) {
+      $access_token = variable_get('hubspot_access_token', '');
+      $result = drupal_http_request("https://api.hubapi.com/contacts/v1/lists/recently_updated/contacts/recent?access_token={$access_token}&count={$n}");
+    }
+  }
+
+  return array(
+    'Data' => json_decode($result->data),
+    'Error' => isset($result->error) ? $result->error : '',
+    'HTTPCode' => $result->code
+  );
+}

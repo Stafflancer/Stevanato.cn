@@ -1,0 +1,442 @@
+<?php
+/**
+ * @file
+ *
+ * Automate module.
+ */
+
+define('AUTOMATE_TRACKING_PAGES', "admin\nadmin/*\nbatch\nnode/add*\nnode/*/*\nuser/*/*");
+
+/**
+ * Collapse Webform components and submission values into key value pairs.
+ *
+ * @param array $form
+ *  Nested array of form elements that comprise the form.
+ * @param array $form_state
+ *  A keyed array containing the current state of the form.
+ *
+ * @return array
+ *   Return an array of key | value pairs where key is the Webform component
+ *   key (machine name) and the submitted value(s).
+ */
+function automate_webform_values($form, $form_state) {
+  $result = array();
+
+  if (!empty($form_state['webform'])) {
+    foreach ($form_state['webform']['component_tree']['children'] as $key => $value) {
+
+      // Process fieldset's child components.
+      if (array_key_exists('children', $value)) {
+        automate_webform_collapse_children($value, $form, $form_state, $result);
+      }
+
+      // Prepare machine name | value pairs.
+      if (isset($form_state['values']['submitted'][$key])) {
+        automate_match_component_values($key, $value, $form, $form_state, $result);
+      }
+    }
+  }
+
+  return $result;
+}
+
+/**
+ * Processes the child components of a parent Webform component.
+ *
+ * @param array $parent
+ *  A Webform component with child components, e.g. a fieldset component.
+ * @param array $form
+ *  Nested array of form elements that comprise the form.
+ * @param array $form_state
+ *  A keyed array containing the current state of the form.
+ * @param array $result
+ *
+ * @see automate_webform_values().
+ */
+function automate_webform_collapse_children($parent, $form, $form_state, &$result) {
+  foreach ($parent['children'] as $key => $value) {
+    if (array_key_exists('children', $value)) {
+      _automate_form_collapse_children($parent, $form, $form_state, $result);
+    }
+
+    // Prepare machine name | value pairs.
+    if (isset($form_state['values']['submitted'][$key])) {
+      automate_match_component_values($key, $value, $form, $form_state, $result);
+    }
+  }
+}
+
+/**
+ * Helper function to pair component key (machine name) with submitted value(s).
+ *
+ * @param string $key
+ *  A Webform component ID.
+ * @param array $value
+ *  A Webform component array.
+ * @param array $form
+ *  Nested array of form elements that comprise the form.
+ * @param array $form_state
+ *  A keyed array containing the current state of the form.
+ * @param array $result
+ *
+ * @see automate_webform_values().
+ */
+function automate_match_component_values($key, $value, $form, $form_state, &$result) {
+  $component_key = $value['form_key'];
+
+  // Flatten multi-value responses into string.
+  if (in_array($form['submitted'][$component_key]['#type'], array('select', 'radios', 'checkboxes'))) {
+    if (is_array($form_state['values']['submitted'][$key])) {
+      foreach ($form_state['values']['submitted'][$key] as $item_key) {
+        $result[$component_key] .= $form['submitted'][$component_key]['#options'][$item_key] . '; ';
+      }
+    }
+    else {
+      $result[$component_key] = $form_state['values']['submitted'][$key];
+    }
+  }
+  // If this is an address field.
+  elseif (!empty($form['submitted'][$component_key]['#addressfield'])) {
+    if ($address = unserialize($value)) {
+      foreach ($address as $address_field => $address_field_value) {
+        if (empty($result[$address_field])) {
+          // Prefix with the name to allow for multiple address fields.
+          $result[$component_key . '_' . $address_field] = $address_field_value;
+        }
+      }
+    }
+  }
+  // Everything else is just passed along.
+  else {
+    $result[$component_key] = $form_state['values']['submitted'][$key];
+  }
+}
+
+/**
+ * Returns the user headers filtered for types that shouldn't be needed.
+ *
+ * @return array
+ *   The filtered user headers.
+ */
+function automate_get_user_headers() {
+  $headers = array();
+
+  // Getting the request headers only exists in apache.
+  if (function_exists('apache_request_headers')) {
+    $headers = apache_request_headers();
+  }
+  else {
+    // Logic judiciously stolen from
+    // @link http://www.php.net/manual/en/function.apache-request-headers.php#72498 @endlink
+    foreach ($_SERVER as $k => $v) {
+      if (substr($k, 0, 5) == 'HTTP_') {
+        $k = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($k, 5)))));
+        $headers[$k] = $v;
+      }
+    }
+  }
+
+  // Check to see if the function succeeded or not.
+  if (!$headers) {
+    return array();
+  }
+
+  // Lowercase just to be sure we're consistent.
+  foreach ($headers as $key => $value) {
+    $headers[strtolower($key)] = $value;
+  }
+
+  unset($headers['host']);
+  unset($headers['cookie']);
+
+  return $headers;
+}
+
+/**
+ * Implements hook_init().
+ *
+ * Invoke automate_tracking hook for modules that add javascript tracking to the page.
+ */
+function automate_init() {
+  global $user;
+
+  foreach (module_implements('automate_tracking') as $module) {
+    $function = $module . '_' . 'automate_tracking';
+
+    if (_automate_visibility_pages($module) == 1) {
+      if (_automate_visibility_roles($user, $module)) {
+        module_invoke($module, 'automate_tracking');
+      }
+    }
+  }
+}
+
+/**
+ * Determines if tracking code should be invoked for the current page.
+ *
+ * @param string $module
+ *   Module key name.
+ *
+ * @return bool
+ *   Returns TRUE if GA code should be added to the page, FALSE otherwise.
+ */
+function _automate_visibility_pages($module) {
+  static $page_match;
+
+  // Cache visibility result if function is called more than once.
+  if (!isset($page_match)) {
+
+    $visibility = variable_get($module . '_visibility_pages', 0);
+    $setting_pages = variable_get($module . '_pages', AUTOMATE_TRACKING_PAGES);
+
+    // Match path if necessary.
+    if (!empty($setting_pages)) {
+
+      // Convert path to lowercase. This allows comparison of the same path
+      // with different case. Ex: /Page, /page, /PAGE.
+      $pages = drupal_strtolower($setting_pages);
+      if ($visibility < 2) {
+        // Convert the Drupal path to lowercase.
+        $path = drupal_strtolower(drupal_get_path_alias($_GET['q']));
+        // Compare the lowercase internal and lowercase path alias (if any).
+        $page_match = drupal_match_path($path, $pages);
+        if ($path != $_GET['q']) {
+          $page_match = $page_match || drupal_match_path($_GET['q'], $pages);
+        }
+        // When $visibility has a value of 0, the tracking code is displayed on
+        // all pages except those listed in $pages. When set to 1, it
+        // is displayed only on those pages listed in $pages.
+        $page_match = !($visibility xor $page_match);
+      }
+      elseif (module_exists('php')) {
+        $page_match = php_eval($setting_pages);
+      }
+      else {
+        $page_match = FALSE;
+      }
+    }
+    else {
+      $page_match = TRUE;
+    }
+  }
+  return $page_match;
+}
+
+/**
+ * Determines if tracking code should be invoked for the given user's role.
+ *
+ * @param array $user
+ *   The given user.
+ *
+ * @param string $module
+ *   Module key name.
+ *
+ * @return bool
+ *   Returns TRUE if GA code should be added for the role, FALSE otherwise.
+ */
+function _automate_visibility_roles($user, $module) {
+  $visibility = variable_get($module . '_visibility_roles', 0);
+  $enabled = $visibility;
+  $roles = variable_get($module . '_roles', array());
+
+  if (array_sum($roles) > 0) {
+    // One or more roles are selected.
+    foreach (array_keys($user->roles) as $rid) {
+      // Is the current user a member of one of these roles?
+      if (isset($roles[$rid]) && $rid == $roles[$rid]) {
+        // Current user is a member of a role that should be tracked/excluded
+        // from tracking.
+        $enabled = !$visibility;
+        break;
+      }
+    }
+  }
+  else {
+    // No role is selected for tracking, therefore all roles should be tracked.
+    $enabled = TRUE;
+  }
+
+  return $enabled;
+}
+
+/**
+ * Automate form tracking settings.
+ *
+ * @param string $module
+ *   Module key name.
+ *
+ * @return array
+ *   $form element.
+ */
+function automate_form_tracking($module) {
+  $form = array();
+
+  $form['tracking'] = array(
+    '#type' => 'vertical_tabs',
+    '#weight' => 2,
+  );
+  $form['tracking_title'] = array(
+    '#type' => 'item',
+    '#title' => t('Tracking scope'),
+    '#weight' => 2,
+  );
+  // Page specific visibility configurations.
+  $php_access = user_access('use PHP for tracking visibility');
+  $visibility = variable_get($module . '_visibility_pages', 0);
+  $pages = variable_get($module . '_pages', AUTOMATE_TRACKING_PAGES);
+
+  $form['tracking']['page_vis_settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Pages'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  if ($visibility == 2 && !$php_access) {
+    $form['tracking']['page_vis_settings'] = array();
+    $form['tracking']['page_vis_settings']['visibility'] = array('#type' => 'value', '#value' => 2);
+    $form['tracking']['page_vis_settings']['pages'] = array('#type' => 'value', '#value' => $pages);
+  }
+  else {
+    $options = array(
+      t('Every page except the listed pages'),
+      t('The listed pages only'),
+    );
+    $description = t("Specify pages by using their paths. Enter one path per line. The '*' character is a wildcard. Example paths are %blog for the blog page and %blog-wildcard for every personal blog. %front is the front page.", array(
+      '%blog' => 'blog',
+      '%blog-wildcard' => 'blog/*',
+      '%front' => '<front>',
+    ));
+
+    if (module_exists('php') && $php_access) {
+      $options[] = t('Pages on which this PHP code returns <code>TRUE</code> (experts only)');
+      $title = t('Pages or PHP code');
+      $description .= ' ' . t('If the PHP option is chosen, enter PHP code between %php. Note that executing incorrect PHP code can break your Drupal site.', array('%php' => '<?php ?>'));
+    }
+    else {
+      $title = t('Pages');
+    }
+    $form['tracking']['page_vis_settings'][$module . '_visibility_pages'] = array(
+      '#type' => 'radios',
+      '#title' => t('Add tracking to specific pages'),
+      '#options' => $options,
+      '#default_value' => $visibility,
+    );
+    $form['tracking']['page_vis_settings'][$module . '_pages'] = array(
+      '#type' => 'textarea',
+      '#title' => $title,
+      '#title_display' => 'invisible',
+      '#default_value' => $pages,
+      '#description' => $description,
+      '#rows' => 10,
+    );
+  }
+
+  // Render the role overview.
+  $form['tracking']['role_vis_settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Roles'),
+  );
+
+  $form['tracking']['role_vis_settings'][$module . '_visibility_roles'] = array(
+    '#type' => 'radios',
+    '#title' => t('Add tracking for specific roles'),
+    '#options' => array(
+      t('Add to the selected roles only'),
+      t('Add to every role except the selected ones'),
+    ),
+    '#default_value' => variable_get($module . '_visibility_roles', 0),
+  );
+
+  $role_options = array_map('check_plain', user_roles());
+  $form['tracking']['role_vis_settings'][$module . '_roles'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Roles'),
+    '#default_value' => variable_get($module . '_roles', array()),
+    '#options' => $role_options,
+    '#description' => t('If none of the roles are selected, all users will be tracked. If a user has any of the roles checked, that user will be tracked (or excluded, depending on the setting above).'),
+  );
+
+  return $form;
+}
+
+/**
+ * Automate Map Webform Values
+ *
+ * @param $form_values
+ * @param $field_mappings
+ *
+ * @return array
+ *   key value pairs of values to be sent to 3rd party.
+ */
+function automate_map_webform_values($form_values, $field_mappings) {
+  $result = array();
+
+  // Map fields to their appropriate values.
+  foreach ($form_values as $key => $value) {
+    if (!empty($field_mappings[$key]['key'])) {
+      $result[$field_mappings[$key]['key']] = $value;
+    }
+    elseif (!empty($result[$key])) {
+      $result[$key] = $value;
+    }
+  }
+
+  return $result;
+}
+
+/**
+ * Automate get password.
+ *
+ * @param string $password
+ *   Encrypted password.
+ * @param boolean $decrypt
+ *   Decrypt password returned if TRUE.
+ *
+ * @return string
+ *   Unencrypted password.
+ */
+function automate_get_password($password, $decrypt = TRUE) {
+  // If mcrypt is being used we need to decrypt the password.
+  if ($password AND function_exists('mcrypt_encrypt') AND $decrypt) {
+    $key = drupal_substr(drupal_get_hash_salt(), 0, 32);
+    $iv_size = mcrypt_get_iv_size(MCRYPT_RIJNDAEL_256, MCRYPT_MODE_ECB);
+    $iv = mcrypt_create_iv($iv_size, MCRYPT_RAND);
+    $ciphertext_dec = base64_decode($password);
+    $plaintext_dec = mcrypt_decrypt(MCRYPT_RIJNDAEL_256, $key, $ciphertext_dec, MCRYPT_MODE_ECB, $iv);
+
+    return rtrim($plaintext_dec, "\0");
+  }
+  elseif ($password) {
+    return $password;
+  }
+  else {
+    return '';
+  }
+}
+
+/**
+ * Automate Set Password.
+ *
+ * @param string $password
+ *
+ * @return string
+ *   Encrypted password.
+ */
+function automate_set_password($password = '') {
+  // If mcrypt is available we will encrypt the password in the database.
+  if ($password AND function_exists('mcrypt_encrypt')) {
+    $key = drupal_substr(drupal_get_hash_salt(), 0, 32);
+    $iv_size = mcrypt_get_iv_size(MCRYPT_RIJNDAEL_256, MCRYPT_MODE_ECB);
+    $iv = mcrypt_create_iv($iv_size, MCRYPT_RAND);
+    $ciphertext = mcrypt_encrypt(MCRYPT_RIJNDAEL_256, $key, $password, MCRYPT_MODE_ECB, $iv);
+    $ciphertext_base64 = base64_encode($ciphertext);
+
+    // Store encrypted password.
+    return $ciphertext_base64;
+  }
+  // Otherwise it will be in plain text
+  elseif ($password) {
+    return $password;
+  }
+}

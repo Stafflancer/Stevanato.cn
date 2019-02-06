@@ -1,0 +1,10 @@
+name = Automate API
+description = "Automate provides an API for common integrations found in marketing automation modules."
+core = 7.x
+
+; Information added by Drupal.org packaging script on 2015-11-20
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "automate"
+datestamp = "1448033340"
+
