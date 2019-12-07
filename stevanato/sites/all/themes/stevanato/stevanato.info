@@ -1,4 +1,6 @@
 name = Stevanato
+developer = christopher akinboboye
+developer url = https://stafflancer.com
 description = A flexible, recolorable theme with many regions.
 package = Core
 version = VERSION
